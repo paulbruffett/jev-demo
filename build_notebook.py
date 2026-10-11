@@ -138,25 +138,75 @@ pd.concat([a, b], axis=1)
 """)
 
 md(r"""
-**2.3 Decompose.** Instead of one broad question, ask several narrow ones in the same request and combine them in code.
-Questions in one request run in parallel and cannot see each other. (An independent phishing benchmark had Jev at 62.6%
-as one question and 95.0% as five atomic signals combined by a regression.) Here a relevance `noul` sits beside the
-`choice`; it becomes the first mitigation in section 5.
+**2.3 Decompose.** Ask one compound question and the model has to do the reasoning; ask several narrow ones and code
+does it. The rule below needs counting ("at least three of five signals"), which decision models are documented to be
+weak at. The same ten tickets are judged two ways: (a) one `noul` with the rule in the state, (b) five `noul`s, one per
+signal, with no rule at all, added up in code. Questions in one request run in parallel and cannot see each other, so
+(b) is still a single call.
 """)
 
 code(r"""
-q = {"is_banking": {"type": "noul", "instructions": "Is the user asking about a bank account, card, or payment?",
-                    "criteria": {"true": "The message concerns money, a bank account, a card, or a payment.",
-                                 "false": "The message is about something else."}},
-     "intent": {"type": "choice", "instructions": jevlib.INSTR, "criteria": good}}
-for text in ["my card got declined at the store just now", "how do i say good morning in japanese", "tell me a recipe for banana bread"]:
-    ans = decide(JEV, {"message": text}, q)[0]["answers"]
-    i = ans["intent"]
-    print(f"{text!r:50s} is_banking={ans['is_banking']['noul']:.2f}   intent={i['choice']} (p={i['probabilities'][i['choice']]:.2f})")
+RULE = ("Escalate a ticket to a senior engineer when at least three of these five signals are present: the customer is on "
+        "the enterprise plan, production is down, data loss is reported, the issue has lasted more than a day, the customer "
+        "mentions cancelling.")
+tickets = [  # (ticket, number of signals actually present)
+    ("Free tier user here. The dashboard is a bit slow today, any idea why?", 0),
+    ("I'm on the starter plan. A report has shown the wrong totals for a week now. Not urgent.", 1),
+    ("Enterprise plan. Production outage started twenty minutes ago. No data lost so far.", 2),
+    ("Our production site is down right now and we lost about an hour of orders from the database.", 2),
+    ("Enterprise customer. A staging export failed this morning. If this isn't fixed we will cancel our contract.", 2),
+    ("We're on the Enterprise plan. Production has been down since Monday morning, it's now Wednesday. Please help.", 3),
+    ("Thinking of cancelling. Also the app has been crashing in production for two days straight.", 3),
+    ("We are an enterprise customer and some records were deleted during the migration yesterday afternoon; today they are still missing after 30 hours.", 3),
+    ("We lost customer records in last night's sync, this has been going on for three days, and frankly we're looking at other vendors and will cancel.", 3),
+    ("Enterprise account. Prod is down, we've lost data, it has been two days, and we are ready to cancel.", 5),
+]
+
+# (a) one compound question: the rule goes in the state and the model has to count
+one = {"escalate": {"type": "noul", "instructions": "Should this ticket be escalated to a senior engineer under the rule?"}}
+
+# (b) five atomic questions: no rule, no counting. Code adds up the answers.
+signals = {
+    "enterprise": {"type": "noul", "instructions": "Does the customer state they are on the enterprise plan?",
+                   "criteria": {"true": "The ticket explicitly says enterprise plan, account or customer.",
+                                "false": "Another plan is named, or no plan is mentioned."}},
+    "prod_down":  {"type": "noul", "instructions": "Does the customer say production is down or crashing?"},
+    "data_loss":  {"type": "noul", "instructions": "Does the customer report lost or deleted data?"},
+    "over_a_day": {"type": "noul", "instructions": "Has the issue lasted more than one day?"},
+    "cancel":     {"type": "noul", "instructions": "Does the customer mention cancelling or leaving?"},
+}
+
+rows = []
+for ticket, n_true in tickets:
+    p_one = decide(JEV, {"rule": RULE, "ticket": ticket}, one)[0]["answers"]["escalate"]["noul"]
+    ans = decide(JEV, {"ticket": ticket}, signals)[0]["answers"]
+    p = {k: ans[k]["noul"] for k in signals}
+    n = sum(v >= 0.5 for v in p.values())
+    rows.append({"ticket": ticket[:42] + "...", "signals present": n_true, "should escalate": n_true >= 3,
+                 "one question: P(escalate)": p_one, **p, "counted in code": n, "decision in code": n >= 3})
+dec = pd.DataFrame(rows)
+print(f"one question:   {((dec['one question: P(escalate)'] >= 0.5) == dec['should escalate']).sum()} of {len(dec)} correct, "
+      f"{dec['one question: P(escalate)'].between(0.2, 0.8).sum()} answers in the unsure band (0.2 to 0.8)")
+print(f"five questions: {(dec['decision in code'] == dec['should escalate']).sum()} of {len(dec)} correct, "
+      f"{sum(dec[k].between(0.2, 0.8).sum() for k in signals)} of {len(dec) * len(signals)} answers in the unsure band")
+dec
+""")
+
+code(r"""
+# Left: every probability each framing returned, with the unsure band shaded. Right: the compound answer against the true signal count.
+jevlib.plot_decomposition(dec, signals);
 """)
 
 md(r"""
-Banana bread went to one of the six intents. There was nowhere else for it to go.
+The chart summarises the table: the left panel shows every probability each framing returned, the right panel shows the
+compound answer against the true signal count. Read the table by the "signals present" column. Far from the threshold (0, 1 or 5 signals) the single question is
+confident and right. At exactly two or three signals it hedges, with answers such as 0.55, 0.41 and 0.23, and it gets one
+wrong. The five atomic answers on those same tickets sit near 0 or 1, and the count in code is right every time. Two
+further gains: the atomic answers show *which* signals fired, and a bad one can be fixed locally. An earlier wording,
+"Is the customer on the enterprise plan?", returned 0.51 when no plan was mentioned; adding the criteria line above
+moved it to 0.02. (Ten hand-written tickets illustrate the pattern; they are not a benchmark. An independent phishing
+benchmark had Jev at 62.6% as one question and 95.0% as five atomic signals combined by a regression. A simpler rule,
+where all of three conditions must hold, showed no gap at all when we tried it: the effect needs counting or weighing.)
 
 ---
 ## 3. Jev vs GPT-6 Luna on CLINC150

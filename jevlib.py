@@ -226,3 +226,67 @@ def repeat_summary(df):
                           "p_max mean": round(g.p_max.mean(), 3), "sd": round(g.p_max.std(), 3),
                           "min": g.p_max.min(), "max": g.p_max.max()})
     return df.groupby(["text", "model"]).apply(agg, include_groups=False)
+
+
+# ----------------------------------------------------------------------------- chart for section 2.3
+def plot_decomposition(dec, signal_names, one_col="one question: P(escalate)", band=(0.2, 0.8)):
+    """Two panels: where each framing's answers land on the 0-1 scale, and how the compound answer varies with the
+    true signal count. `dec` is the table built in section 2.3."""
+    import matplotlib.pyplot as plt
+    SURF, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
+    C_ONE, C_MANY = "#2a78d6", "#eb6834"          # validated pair (colourblind-safe, >= 3:1 on the surface)
+    one = dec[one_col].to_numpy(float)
+    many = dec[list(signal_names)].to_numpy(float).ravel()
+    gold = dec["should escalate"].to_numpy(bool)
+    in_band = lambda v: int(((v > band[0]) & (v < band[1])).sum())
+    ok_one = int(((one >= 0.5) == gold).sum()); ok_many = int((dec["decision in code"] == dec["should escalate"]).sum())
+
+    def stack(vals, step=0.105, width=0.025):      # dot histogram: equal values pile upward from the row's baseline
+        ys, seen = [], {}
+        for v in vals:
+            k = round(v / width); n = seen.get(k, 0); seen[k] = n + 1
+            ys.append(n * step)
+        return np.array(ys)
+
+    fig, (a, b) = plt.subplots(1, 2, figsize=(12.5, 5.2), gridspec_kw={"width_ratios": [1.25, 1]}, facecolor=SURF)
+    for ax in (a, b):
+        ax.set_facecolor(SURF)
+        for s in ("top", "right", "left"): ax.spines[s].set_visible(False)
+        ax.spines["bottom"].set_color(AXIS); ax.tick_params(colors=MUTED, length=0, labelsize=9)
+
+    # panel A: one row per framing, x = the probability returned
+    a.axvspan(*band, color=GRID, alpha=0.55, lw=0)
+    a.text(sum(band) / 2, 3.72, "unsure band, 0.2 to 0.8", ha="center", va="center", fontsize=9, color=INK2)
+    rows = [(2.55, one, C_ONE, "One compound question", f"{len(one)} answers, {in_band(one)} in the band, {ok_one} of {len(one)} decisions correct"),
+            (0.0, many, C_MANY, "Five atomic questions", f"{len(many)} answers, {in_band(many)} in the band, {ok_many} of {len(dec)} decisions correct")]
+    for y0, vals, col, name, note in rows:
+        a.scatter(vals, y0 + stack(vals), s=46, color=col, edgecolor=SURF, linewidth=1.2, zorder=3)
+        a.axhline(y0 - 0.09, color=AXIS, lw=0.8, zorder=1)
+        a.text(0.5, y0 + 0.78, name, fontsize=10.5, color=INK, fontweight="bold", ha="center", va="bottom")
+        a.text(0.5, y0 + 0.50, note, fontsize=9, color=INK2, ha="center", va="bottom")
+    a.set_xlim(-0.03, 1.03); a.set_ylim(-0.12, 3.9); a.set_yticks([])
+    a.set_xticks([0, 0.2, 0.5, 0.8, 1.0]); a.set_xlabel("probability returned by the model", color=INK2, fontsize=9.5)
+    a.set_title("Where each framing's answers land", loc="left", fontsize=12, color=INK, pad=12)
+
+    # panel B: the compound answer against the true signal count
+    n_true = dec["signals present"].to_numpy(float)
+    offs, seen = [], {}
+    for v in n_true:
+        n = seen.get(v, 0); seen[v] = n + 1; offs.append(n)
+    counts = {v: c for v, c in seen.items()}
+    xs = np.array([v + (o - (counts[v] - 1) / 2) * 0.16 for v, o in zip(n_true, offs)])
+    wrong = (one >= 0.5) != gold
+    b.axhspan(*band, color=GRID, alpha=0.55, lw=0)
+    b.axvline(2.5, color=AXIS, lw=1, ls=(0, (4, 3)))
+    b.text(2.58, 1.09, "rule: escalate at 3 or more", fontsize=9, color=INK2, ha="left", va="center")
+    b.scatter(xs[~wrong], one[~wrong], s=70, color=C_ONE, edgecolor=SURF, linewidth=1.4, zorder=3)
+    b.scatter(xs[wrong], one[wrong], s=70, facecolor=SURF, edgecolor=C_ONE, linewidth=2, zorder=3)
+    for x, y in zip(xs[wrong], one[wrong]):
+        b.annotate("should escalate,\nanswered below 0.5", (x, y), xytext=(12, -24), textcoords="offset points", fontsize=9, color=INK2)
+    b.axhline(0.5, color=AXIS, lw=0.8)
+    b.set_xlim(-0.5, 5.5); b.set_ylim(-0.05, 1.13); b.set_xticks(range(6)); b.set_yticks([0, 0.2, 0.5, 0.8, 1.0])
+    b.set_xlabel("signals actually present in the ticket", color=INK2, fontsize=9.5)
+    b.set_ylabel("P(escalate), one compound question", color=INK2, fontsize=9.5)
+    b.set_title("The compound question hedges at the threshold", loc="left", fontsize=12, color=INK, pad=12)
+    fig.tight_layout(w_pad=3)
+    return fig
