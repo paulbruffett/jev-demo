@@ -72,14 +72,16 @@ for model in [JEV, LUNA_DEC]:
 md(r"""
 ### 1.2 Why this is different from prompting an LLM for a label
 
-A chat model produces a distribution over its whole vocabulary at every token and you *read a label out of the text*.
-A decision model is trained to answer the typed question directly: for a `choice`, the probability mass is normalised
-over **only the options you declared**. That guarantees the answer is one of your options, gives you a probability for
-each, and removes parsing and validation. It also creates the failure studied in section 5: every unit of probability
-must land on one of your options, **even when none of them fits**.
+**A chat model writes text; a decision model returns a choice.** With a chat model you ask for a label, get text back,
+and parse it. A decision model skips the text. You list the options, and it returns one of them with a probability for each.
 
-`confidence` is not a second opinion. For a `choice` it is a fixed function of the top probability,
-`(p_max - 1/n) / (1 - 1/n)`, i.e. how concentrated the distribution is. It says nothing about whether the answer is right.
+**The probabilities always add up to 1 across your options.** This is useful: the answer is always valid, and you can
+see how close the runner-up was. It is also the catch. If a message fits none of your options, the model still has to
+pick one, and can do so with high probability. Section 5 measures this.
+
+**`confidence` is a summary of the probabilities, not a separate check.** It rescales the top probability so that 0 means
+a blind guess and 1 means all the weight is on one option. For a choice the formula is `(p_max - 1/n) / (1 - 1/n)`, where
+`n` is the number of options. A wrong answer can have confidence 1.
 """)
 
 md(r"""
@@ -244,6 +246,11 @@ budget
 
 code(r"""
 pd.DataFrame({m: jevlib.summarize(results[("no_other", m)]) for m in CONFIGS}).T
+""")
+
+code(r"""
+# The same numbers as a picture: one panel per measure, the same three rows in each.
+jevlib.plot_comparison(results, CONFIGS);
 """)
 
 md(r"""
@@ -466,7 +473,14 @@ pd.concat({m: sweep(results[("with_other", m)]) for m in [JEV, LUNA_DEC]}, axis=
 md(r"""
 ---
 ## 6. Take-aways
+""")
 
+code(r"""
+# Summary figure: the section 3 comparison plus out-of-scope queries caught once `other` is offered.
+jevlib.plot_comparison(results, CONFIGS);
+""")
+
+md(r"""
 **A decision model is a different interface, not a cheaper LLM.** Typed questions in, probabilities out, no text. The
 probability is the product: it is what lets code decide to act, confirm, or escalate.
 

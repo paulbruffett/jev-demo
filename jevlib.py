@@ -256,15 +256,18 @@ def plot_decomposition(dec, signal_names, one_col="one question: P(escalate)", b
 
     # panel A: one row per framing, x = the probability returned
     a.axvspan(*band, color=GRID, alpha=0.55, lw=0)
-    a.text(sum(band) / 2, 3.72, "unsure band, 0.2 to 0.8", ha="center", va="center", fontsize=9, color=INK2)
-    rows = [(2.55, one, C_ONE, "One compound question", f"{len(one)} answers, {in_band(one)} in the band, {ok_one} of {len(one)} decisions correct"),
-            (0.0, many, C_MANY, "Five atomic questions", f"{len(many)} answers, {in_band(many)} in the band, {ok_many} of {len(dec)} decisions correct")]
-    for y0, vals, col, name, note in rows:
+    a.text(sum(band) / 2, 4.12, "unsure band, 0.2 to 0.8", ha="center", va="center", fontsize=9, color=INK2)
+    rows = [(2.55, one, C_ONE, "One compound question", "each dot: should this ticket escalate?",
+             f"{len(one)} answers, {in_band(one)} in the band, {ok_one} of {len(one)} decisions correct"),
+            (0.0, many, C_MANY, "Five atomic questions", "each dot: is this one signal present in this ticket?",
+             f"{len(many)} answers, {in_band(many)} in the band, {ok_many} of {len(dec)} decisions correct after counting in code")]
+    for y0, vals, col, name, sub, note in rows:
         a.scatter(vals, y0 + stack(vals), s=46, color=col, edgecolor=SURF, linewidth=1.2, zorder=3)
         a.axhline(y0 - 0.09, color=AXIS, lw=0.8, zorder=1)
-        a.text(0.5, y0 + 0.78, name, fontsize=10.5, color=INK, fontweight="bold", ha="center", va="bottom")
+        a.text(0.5, y0 + 1.04, name, fontsize=10.5, color=INK, fontweight="bold", ha="center", va="bottom")
+        a.text(0.5, y0 + 0.77, sub, fontsize=9, color=INK, style="italic", ha="center", va="bottom")
         a.text(0.5, y0 + 0.50, note, fontsize=9, color=INK2, ha="center", va="bottom")
-    a.set_xlim(-0.03, 1.03); a.set_ylim(-0.12, 3.9); a.set_yticks([])
+    a.set_xlim(-0.03, 1.03); a.set_ylim(-0.12, 4.3); a.set_yticks([])
     a.set_xticks([0, 0.2, 0.5, 0.8, 1.0]); a.set_xlabel("probability returned by the model", color=INK2, fontsize=9.5)
     a.set_title("Where each framing's answers land", loc="left", fontsize=12, color=INK, pad=12)
 
@@ -289,4 +292,69 @@ def plot_decomposition(dec, signal_names, one_col="one question: P(escalate)", b
     b.set_ylabel("P(escalate), one compound question", color=INK2, fontsize=9.5)
     b.set_title("The compound question hedges at the threshold", loc="left", fontsize=12, color=INK, pad=12)
     fig.tight_layout(w_pad=3)
+    return fig
+
+
+# ----------------------------------------------------------------------------- chart for sections 3 and 6
+MODEL_NAMES = {"typesafe/jev-1.13": "Jev 1.13", "openai/gpt-6-luna-decisions": "Luna decisions", "openai/gpt-6-luna": "Luna chat"}
+
+def plot_comparison(results, models):
+    """One small panel per measure, the same model rows in each: accuracy (with 95% interval), latency (median to p95),
+    cost per 1,000 requests, and, once the `with_other` runs exist in `results`, out-of-scope queries caught."""
+    import matplotlib.pyplot as plt
+    SURF, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
+    COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]      # validated trio; every mark is also labelled directly
+    models = list(models); ys = {m: len(models) - 1 - i for i, m in enumerate(models)}
+    base = {m: results[("no_other", m)] for m in models}
+    has_other = all(("with_other", m) in results for m in models)
+    n_pan = 4 if has_other else 3
+    fig, axes = plt.subplots(1, n_pan, figsize=(3.3 * n_pan + 1.2, 3.3), facecolor=SURF, sharey=True)
+
+    def frame(ax, title, note, xlim, ticks, fmt, xlabel):
+        ax.set_facecolor(SURF)
+        for s in ("top", "right", "left"): ax.spines[s].set_visible(False)
+        ax.spines["bottom"].set_color(AXIS); ax.tick_params(colors=MUTED, length=0, labelsize=8.5)
+        ax.set_xlim(*xlim); ax.set_xticks(ticks); ax.set_xticklabels([fmt(t) for t in ticks])
+        ax.set_ylim(-0.6, len(models) - 0.35); ax.set_yticks([])
+        ax.grid(axis="x", color=GRID, lw=0.8); ax.set_axisbelow(True)
+        ax.set_title(title, loc="left", fontsize=11, color=INK, pad=18)
+        ax.text(0, 1.035, note, transform=ax.transAxes, fontsize=8.5, color=INK2, ha="left", va="bottom")
+        ax.set_xlabel(xlabel, fontsize=8.5, color=INK2, labelpad=6)
+
+    def dot(ax, x, m, label, dx=7, ha="left"):
+        ax.scatter([x], [ys[m]], s=70, color=COLORS[models.index(m)], edgecolor=SURF, linewidth=1.4, zorder=3)
+        ax.annotate(label, (x, ys[m]), xytext=(dx, 9), textcoords="offset points", fontsize=9, color=INK, ha=ha, va="center")
+
+    # 1 accuracy with bootstrap interval (zoomed axis)
+    ax = axes[0]; frame(ax, "In-scope accuracy", "higher is better", (0.90, 1.0), [0.90, 0.95, 1.0], lambda t: f"{t:.0%}", "line = 95% interval · axis starts at 90%")
+    for m in models:
+        r = base[m]; ins = r[~r.is_oos]; acc, lo, hi = bootstrap_ci(ins.pred.eq(ins.label))
+        ax.plot([lo, hi], [ys[m]] * 2, color=COLORS[models.index(m)], lw=2, solid_capstyle="round", zorder=2)
+        dot(ax, acc, m, f"{acc:.1%}", dx=0, ha="center")
+        refused = int(r.pred.isna().sum())
+        if refused:
+            ax.annotate(f"{refused} refusals counted as wrong", (lo, ys[m]), xytext=(0, -13), textcoords="offset points", fontsize=8, color=INK2, ha="left", va="center")
+    for m in models:   # row labels, once, left of the first panel
+        ax.text(-0.04, ys[m], MODEL_NAMES.get(m, m), transform=ax.get_yaxis_transform(), fontsize=10, color=INK, ha="right", va="center", fontweight="bold")
+
+    # 2 latency: median to 95th percentile
+    ax = axes[1]; top = max(base[m].latency_s.quantile(.95) for m in models) * 1000
+    frame(ax, "Latency", "lower is better", (0, top * 1.12), [0, 500, 1000, 1500], lambda t: f"{t:,.0f}", "milliseconds · dot = median, line to 95th percentile")
+    for m in models:
+        p50, p95 = base[m].latency_s.median() * 1000, base[m].latency_s.quantile(.95) * 1000
+        ax.plot([p50, p95], [ys[m]] * 2, color=COLORS[models.index(m)], lw=2, solid_capstyle="round", zorder=2)
+        dot(ax, p50, m, f"{p50:,.0f} ms", dx=0, ha="left")
+
+    # 3 cost per 1,000 requests
+    ax = axes[2]; costs = {m: base[m].cost.sum() / len(base[m]) * 1000 for m in models}
+    frame(ax, "Cost per 1,000 requests", "lower is better", (0, max(costs.values()) * 1.3), [0, 0.1, 0.2], lambda t: f"${t:.2f}", "billed cost, US dollars")
+    for m in models: dot(ax, costs[m], m, f"${costs[m]:.2f}", dx=0, ha="center")
+
+    # 4 out-of-scope caught once `other` is offered
+    if has_other:
+        ax = axes[3]; frame(ax, "Out-of-scope caught", "higher is better", (0.80, 1.0), [0.80, 0.90, 1.0], lambda t: f"{t:.0%}", "with an `other` option (0% without) · axis starts at 80%")
+        for m in models:
+            r = results[("with_other", m)]; o = r[r.is_oos]; v = o.pred.eq("other").mean()
+            dot(ax, v, m, f"{v:.1%}", dx=0, ha="center")
+    fig.tight_layout(); fig.subplots_adjust(left=1.5 / fig.get_figwidth(), wspace=0.16)
     return fig
