@@ -331,9 +331,9 @@ def plot_comparison(results, models):
         r = base[m]; ins = r[~r.is_oos]; acc, lo, hi = bootstrap_ci(ins.pred.eq(ins.label))
         ax.plot([lo, hi], [ys[m]] * 2, color=COLORS[models.index(m)], lw=2, solid_capstyle="round", zorder=2)
         dot(ax, acc, m, f"{acc:.1%}", dx=0, ha="center")
-        refused = int(r.pred.isna().sum())
+        refused, refused_in = int(r.pred.isna().sum()), int(ins.pred.isna().sum())
         if refused:
-            ax.annotate(f"{refused} refusals counted as wrong", (lo, ys[m]), xytext=(0, -13), textcoords="offset points", fontsize=8, color=INK2, ha="left", va="center")
+            ax.annotate(f"{refused} refusals, {refused_in} of them in-scope", (lo, ys[m]), xytext=(0, -13), textcoords="offset points", fontsize=8, color=INK2, ha="left", va="center")
     for m in models:   # row labels, once, left of the first panel
         ax.text(-0.04, ys[m], MODEL_NAMES.get(m, m), transform=ax.get_yaxis_transform(), fontsize=10, color=INK, ha="right", va="center", fontweight="bold")
 

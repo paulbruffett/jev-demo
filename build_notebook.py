@@ -449,6 +449,28 @@ pd.DataFrame({m: {"in-scope acc, no other":   results[("no_other", m)].pipe(lamb
 """)
 
 md(r"""
+**A note on refusals.** OpenAI's decision head sometimes returns a refusal instead of an answer (OpenRouter surfaces it as
+an HTTP 502 saying "OpenAI refused to answer question"). Jev never does. The cell below shows these are mostly *not*
+content-safety refusals: nearly all of them vanish once `other` is offered, and the same queries are answered `other`
+instead. A safety filter would not care whether an escape option exists; a model declining because nothing fits would
+behave exactly like this. So the refusal is a built-in, but weak, "none of these" signal: it fired on about an eighth of
+out-of-scope queries, and the rest were still given an intent. The refused queries are mostly harmless ("how do you unclog
+a toilet", "what is the current price of tsla"). The reason for a refusal is not passed through, so this reading is inferred
+from behaviour. Whatever the cause, code has to treat a refusal as a reject.
+""")
+
+code(r"""
+a, b = results[("no_other", LUNA_DEC)], results[("with_other", LUNA_DEC)]
+ra, rb = a[a.pred.isna()], b[b.pred.isna()]
+display(pd.DataFrame({"refused": [len(ra), len(rb)], "out-of-scope": [ra.is_oos.sum(), rb.is_oos.sum()], "in-scope": [(~ra.is_oos).sum(), (~rb.is_oos).sum()]},
+                     index=["150 options, no `other`", "151 options, with `other`"]))
+again = b.set_index("text").loc[ra.text].pred.fillna("refused again").value_counts()
+print(f"The {len(ra)} queries refused without `other` were answered, with it:", again.to_dict())
+print("Still refused with `other`:", rb.text.tolist())
+print("Refused in-scope queries:", ra[~ra.is_oos].text.tolist())
+""")
+
+md(r"""
 ### 5.3 A threshold as the second line of defence
 
 The residue that still gets a real intent is the dangerous part: it looks exactly like a good answer. The decision head
