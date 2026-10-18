@@ -469,18 +469,23 @@ def plot_tradeoff(results, models, condition="with_other"):
 
 # ----------------------------------------------------------------------------- chart for section 5.1
 def plot_confidence_bands(results, models, condition="no_other"):
-    """100% stacked bars: for each model, genuine and out-of-scope queries split by the top probability given,
-    with refusals as their own segment."""
+    """100% stacked bars: for each model, genuine and out-of-scope queries split by the top probability given to the
+    chosen intent. Answers of `other` and refusals get their own segments when they occur."""
     import matplotlib.pyplot as plt
     SURF, INK, MUTED, AXIS, GRID = "#fcfcfb", "#0b0b0b", "#898781", "#c3c2b7", "#e1e0d9"
     SEQ = ["#cde2fb", "#9ec5f4", "#5598e7", "#256abf", "#0d366b"]        # light -> dark = less -> more confident
-    REF = "#c3c2b7"
+    REF, OTHER = "#c3c2b7", "#1baf7a"
     bands = [(0, .5, "below 0.5"), (.5, .7, "0.5 to 0.7"), (.7, .9, "0.7 to 0.9"), (.9, .99, "0.9 to 0.99"), (.99, 1.01, "0.99 and above")]
     rows = []
     for m in models:
         r = results[(condition, m)]
         for grp, sub in (("genuine", r[~r.is_oos]), ("out-of-scope", r[r.is_oos])):
-            rows.append((f"{MODEL_NAMES.get(m, m)}, {grp}", [((sub.p_max >= lo) & (sub.p_max < hi)).mean() for lo, hi, _ in bands] + [sub.pred.isna().mean()]))
+            other = sub.pred.eq("other"); intent = ~other & sub.pred.notna()
+            rows.append((f"{MODEL_NAMES.get(m, m)}, {grp}",
+                         [other.mean()] + [(intent & (sub.p_max >= lo) & (sub.p_max < hi)).mean() for lo, hi, _ in bands] + [sub.pred.isna().mean()]))
+    has_other = any(sh[0] > 0 for _, sh in rows)
+    cols = [OTHER] + SEQ + [REF]
+    names = ["answered `other`"] + [b[2] for b in bands] + ["refused"]
     fig, ax = plt.subplots(figsize=(11.5, 0.62 * len(rows) + 1.7), facecolor=SURF)
     ax.set_facecolor(SURF)
     for s in ("top", "right", "left"): ax.spines[s].set_visible(False)
@@ -490,18 +495,21 @@ def plot_confidence_bands(results, models, condition="no_other"):
     for y, (lab, sh) in zip(ys, rows):
         left = 0
         for i, v in enumerate(sh):
-            ax.barh(y, v, left=left, color=REF if i == 5 else SEQ[i], edgecolor=SURF, linewidth=2, height=0.62)
+            if v <= 0: continue
+            ax.barh(y, v, left=left, color=cols[i], edgecolor=SURF, linewidth=2, height=0.62)
             if v >= 0.06:
-                ax.text(left + v / 2, y, f"{v:.0%}", ha="center", va="center", fontsize=8.5, color="white" if i in (3, 4) else INK)
+                ax.text(left + v / 2, y, f"{v:.0%}", ha="center", va="center", fontsize=8.5, color="white" if i in (0, 4, 5) else INK)
             left += v
         ax.text(-0.012, y, lab, ha="right", va="center", fontsize=9.5, color=INK)
     ax.set_yticks([]); ax.set_xlim(0, 1)
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
-    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in SEQ] + [plt.Rectangle((0, 0), 1, 1, color=REF)]
-    ax.legend(handles, [b[2] for b in bands] + ["refused"], ncol=6, frameon=False, loc="lower left", bbox_to_anchor=(0, 1.0),
-              fontsize=9, title="top probability the model gave its chosen intent", title_fontsize=9, alignment="left")
-    ax.set_title("How sure each model sounded, by query type, with no `other` option", loc="left", fontsize=12, color=INK, pad=50)
-    fig.tight_layout(); fig.subplots_adjust(left=1.95 / fig.get_figwidth())
+    keep = [i for i in range(len(cols)) if (i != 0 or has_other)]
+    ax.legend([plt.Rectangle((0, 0), 1, 1, color=cols[i]) for i in keep], [names[i] for i in keep], ncol=len(keep), frameon=False,
+              loc="lower left", bbox_to_anchor=(0, 1.0), fontsize=9, alignment="left",
+              title=("answered `other`, or the top probability given to an intent" if has_other else "top probability the model gave its chosen intent"), title_fontsize=9)
+    ax.set_title("How each model answered, by query type, " + ("with an `other` option" if has_other else "with no `other` option"),
+                 loc="left", fontsize=12, color=INK, pad=50)
+    fig.tight_layout(); fig.subplots_adjust(left=2.15 / fig.get_figwidth())
     return fig
 
 def plot_unknown_squares(results, model, condition="no_other", per_row=50):

@@ -446,6 +446,11 @@ pd.DataFrame({m: {"in-scope acc, no other":   results[("no_other", m)].pipe(lamb
               for m in CONFIGS}).T.round(3)
 """)
 
+code(r"""
+# The same chart as in 5.1, now with `other` available. Green = answered `other`.
+jevlib.plot_confidence_bands(results, [JEV, LUNA_DEC], condition="with_other");
+""")
+
 md(r"""
 **A note on refusals.** OpenAI's decision head sometimes returns a refusal instead of an answer (OpenRouter surfaces it as
 an HTTP 502 saying "OpenAI refused to answer question"). Jev never does. The cell below shows these are mostly *not*
