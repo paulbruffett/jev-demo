@@ -293,6 +293,11 @@ pd.set_option("display.max_colwidth", 60)
 jevlib.repeat_summary(probe)
 """)
 
+code(r"""
+# Each dot is one repeat. A single large dot means all ten were identical; the right-hand columns give the range and the labels.
+jevlib.plot_consistency(probe, CONFIGS);
+""")
+
 md(r"""
 What this shows, and what independent repeats of the same probe have shown:
 
@@ -300,9 +305,11 @@ What this shows, and what independent repeats of the same probe have shown:
   consistency cookbook reports a standard deviation near 0.01; third-party repeats see 0.03 to 0.04, and up to 0.13 on hard
   data). On confident items the label never moves. On a borderline item with two options near 0.45 the label can flip
   between calls, which is exactly where a naive threshold would sit.
-* **OpenAI's decision head is close to deterministic.** Across repeats its probabilities were identical or within 0.01,
-  borderline items included, and no label moved. Note it can still disagree with the *same model* called through chat
-  completions on the same input, since the two paths read different heads.
+* **OpenAI's decision head is repeatable within a session, not across days.** In each run its ten repeats were
+  identical or within 0.01, borderline items included, and no label moved. But the same five queries run two days apart
+  gave different values (0.85 then 0.77 on one, 0.74 then 0.82 on another), and one label changed. So "identical on
+  repeat" may reflect something like short-lived server-side reuse or a model update between runs; we cannot tell which
+  from outside. It can also disagree with the *same model* called through chat completions on the same input.
 * **Chat completions at temperature 0 are greedy, not deterministic.** The label can flip between repeats on ambiguous
   items, and because no probability comes back there is no way to see that the answer was a coin toss.
 * **Repetition is the small source of variance.** Reordering options or rewording criteria moves answers far more than
@@ -312,56 +319,26 @@ What this shows, and what independent repeats of the same probe have shown:
 Practical rule: treat a decision-model probability as having error bars of a few hundredths, and never place a threshold
 where a 0.47 versus 0.45 split decides an action.
 
-### 4.1 Where the probabilities come from, and whether they are "made up"
+**Across days.** The same queries were sent to OpenAI's decision head on four separate days. Within any one day the ten
+repeats were identical. Across days the values stepped once, between 11 and 13 October, and one label changed:
 
-Mechanically a decision model is a transformer and its probabilities are a softmax over logits, exactly as in an LLM.
-Two things differ. The softmax runs over **only the options you declared** (a label or pointer head scores each option, so
-the mass sums to one across your labels). And the training objective is a **proper scoring rule** on those decisions
-(open re-implementations use cross-entropy plus a Brier term on the answer logits; TypeSafe calls its own version
-"Reinforcement Learning for Calibrated Decisions" and publishes no details), so the model is penalised for saying 0.9 about
-things it gets right 60% of the time.
+| query | 10 Oct | 11 Oct | 13 Oct | 15 Oct |
+|---|---|---|---|---|
+| what's on my to-buy list | | shopping_list 0.85 | shopping_list 0.77 | shopping_list 0.77 |
+| you have yo go to school on calendar | calendar 0.94 | calendar 0.94 | calendar 0.95 | calendar 0.95 |
+| what shall i do now that my battery is dead | jump_start 0.74 | jump_start 0.74 | jump_start 0.82 | jump_start 0.82 |
+| how would they say butter in zambia | | definition 0.49 | translate 0.46 | |
+| look up articles on the green dry cleaning industry | what_can_i_ask_you 0.25 | what_can_i_ask_you 0.25 | what_can_i_ask_you 0.23 | |
 
-**How they are trained.** Jev's own recipe is unpublished. TypeSafe's primer names it RLCD ("reinforcement learning for
-calibrated decisions"): post-training that rewards the model when its stated probabilities match how often its answers turn
-out right, on synthetic data, in contrast to RLHF's optimisation for answers people prefer. No paper, loss, reward design or
-data mix has been released. The open re-implementations that copy Jev's interface (Kev-4B, JevLite) show the moving parts:
+Every response on every day reported the same model version, `gpt-6-luna-decisions-20261006`, so the shift was not
+signalled by the version string. Whether it came from OpenAI, from OpenRouter's routing, or from deliberate server-side
+behaviour cannot be told from outside. Luna chat split its answer on the out-of-scope query on every day it was run
+(7 to 3, 8 to 2, 6 to 4 between `maybe` and `travel_suggestion`). Blank cells are queries a run did not include; the 10 and
+15 October values come from separate small runs outside this notebook, so this cell is a record, not something it regenerates.
 
-* **A frozen LLM backbone with a small adapter.** Kev-4B is a rank-16 LoRA on a 4B base model, about 34M trainable
-  parameters. The language model's reading of the text is reused, not retrained.
-* **A head that scores options instead of generating tokens.** Kev's pointer head compares the hidden state at the question's
-  last token with the hidden state at each option's closing token; a softmax over those scores is the probability vector.
-  JevLite reads the two answer-label logits directly. Either way the denominator is the declared options.
-* **A proper scoring rule as the loss**: cross-entropy over the options (Kev), plus a Brier term on the answer logits
-  (JevLite). Putting probability on the right option is rewarded in proportion to how often it is right.
-* **Many typed tasks in one training mix**, so the head learns "score options against a question" generically and transfers
-  zero-shot to option sets it never saw.
-* **Post-hoc temperature scaling.** Kev ships one scalar (about 2.4 to 3.0 by revision) that divides the logits at load time.
-  A temperature well above 1 means the raw head was overconfident and calibration was fixed afterwards with one fitted number.
-
-Kev-4B reports out-of-domain ECE 0.043 against Jev's 0.049 (Jev ahead on Brier, 0.211 vs 0.265), so a small adapter and a
-scalar recover most of the hosted model's calibration. What RL adds over that supervised recipe is not public; the plausible
-gains are training on outcomes known only after the fact, a shared reward across `noul`, `choice` and `score`, and rewarding
-the stated probability itself rather than the argmax. The meta-review of the first 28 Jev papers finds the typed readout
-"has not shown an independent accuracy advantage over comparable label-probability readouts"; the clear wins are latency and
-cost. And because every step above calibrates on the training mix, a single temperature cannot rescue a task the mix did
-not cover, which is the mechanism behind the in-distribution versus out-of-distribution gap below.
-
-Whether an LLM's number is "made up" depends on which number:
-
-* A **verbalised confidence** ("I am 80% sure" written in the reply) is generated text. It is the number that deserves the
-  word, and studies find it poorly calibrated.
-* A **next-token logit** is a genuine statistical estimate: pretraining minimises cross-entropy on the next token, a proper
-  scoring rule. But post-training with human feedback is known to degrade that calibration, and the estimate is of "which
-  label token follows this prompt", never fitted to your labels.
-* A **decision-model probability** is the same kind of object as a logit but trained to be a frequency across many typed
-  tasks. In distribution it behaves like one: both decision heads scored an ECE of about 0.02 on CLINC150 in section 3.
-  Out of distribution it stops: independent audits found ECE around 0.1 on rules not stated in the text, an "unknowable"
-  option averaging 0.74, and a fair-die experiment where Jev put 83% on its pick at 19% accuracy.
-
-Against a logistic regression or a fine-tuned classifier the difference is not the mathematics but the fit. A classifier
-trained on your labels with a proper scoring rule is calibrated on your distribution by construction. A decision model is
-calibrated on the vendor's training distribution and transfers that zero-shot, which is why thresholds belong on your own
-labelled data, and why fine-tuned encoders still win wherever labels exist.
+The practical point: pinning a model name does not guarantee identical outputs over time. If thresholds are tuned on one
+week's results, re-check them on a small fixed set of queries like these, because a silent shift of 0.08 is enough to move
+an answer across a threshold.
 """)
 
 md(r"""
@@ -390,13 +367,34 @@ def oos_report(res):
 
 display(pd.DataFrame({m: oos_report(results[("no_other", m)]) for m in CONFIGS}).T)
 
-fig, axes = plt.subplots(1, 2, figsize=(10, 3.2), sharey=True)
-for ax, m in zip(axes, [JEV, LUNA_DEC]):
-    r = results[("no_other", m)]
-    ax.hist(r[~r.is_oos].p_max, bins=20, range=(0, 1), alpha=.6, density=True, label="in-scope")
-    ax.hist(r[r.is_oos].p_max,  bins=20, range=(0, 1), alpha=.6, density=True, label="out-of-scope")
-    ax.set_title(f"{m}\np_max, no 'other' option"); ax.legend()
-plt.tight_layout()
+# Each bar splits one model's queries by how sure it sounded. Darker = more confident; grey = refused.
+jevlib.plot_confidence_bands(results, [JEV, LUNA_DEC]);
+""")
+
+md(r"""
+**Reading the chart.** Every out-of-scope query here was either given one of the 150 intents or, for OpenAI's head
+only, refused: there was no "none of these" to choose. The bars show how confident those wrong answers sounded. For genuine
+queries both models are mostly at 0.99 and above, which is what you want. For out-of-scope queries the picture splits: Luna's
+decision head sounds unsure about most of them (70% below 0.5) and refuses another 12%, while Jev answers them across the
+whole range, with 40% below 0.5 but 17% at 0.9 or above. Those high-confidence misfiles are the real risk: they look exactly
+like correct answers, so a confidence threshold alone will not catch them. Low probability is a useful warning sign, but
+the reliable fix is to give the model an explicit `other` option, which section 5.2 tests.
+""")
+
+code(r"""
+# The same result for Jev, one square per out-of-scope query.
+jevlib.plot_unknown_squares(results, JEV);
+""")
+
+md(r"""
+<details>
+<summary><b>What this chart shows</b></summary>
+
+Each square is one of the 500 off-topic queries sent to Jev. With no "none of these" option, every one was filed under one
+of the 150 intents, shaded here by how sure Jev sounded. The 86 darkest squares, about one in six, were filed at a
+probability of 0.9 or higher, the same confidence Jev shows on most genuine queries, so nothing in the answer marks them
+as wrong.
+</details>
 """)
 
 code(r"""
@@ -490,6 +488,12 @@ def sweep(res, ths=(0.5, 0.7, 0.8, 0.9, 0.95, 0.99)):
     return pd.DataFrame(rows).set_index("threshold").round(3)
 
 pd.concat({m: sweep(results[("with_other", m)]) for m in [JEV, LUNA_DEC]}, axis=1)
+""")
+
+code(r"""
+# The sweep table as a trade-off curve. Luna chat is absent: it returns no probability to threshold.
+# Scored on the same queries it sweeps over, so this shows the shape of the trade-off, not a threshold ready to deploy.
+jevlib.plot_tradeoff(results, CONFIGS);
 """)
 
 md(r"""

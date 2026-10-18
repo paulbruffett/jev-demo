@@ -358,3 +358,174 @@ def plot_comparison(results, models):
             dot(ax, v, m, f"{v:.1%}", dx=0, ha="center")
     fig.tight_layout(); fig.subplots_adjust(left=1.5 / fig.get_figwidth(), wspace=0.16)
     return fig
+
+
+# ----------------------------------------------------------------------------- chart for section 4
+def plot_consistency(probe, models):
+    """Repeat probe as a picture. One block per query, one row per model: each dot is the top probability from one of
+    the repeated identical requests; the text on the right lists the labels returned and how often."""
+    import collections, matplotlib.pyplot as plt
+    SURF, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
+    COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]
+    models = list(models); texts = list(dict.fromkeys(probe.text))
+    block = len(models) + 1.1                                  # rows per query block, incl. the header line
+    fig, ax = plt.subplots(figsize=(12.5, 0.36 * block * len(texts) + 1.0), facecolor=SURF)
+    ax.set_facecolor(SURF)
+    for s in ("top", "right", "left"): ax.spines[s].set_visible(False)
+    ax.spines["bottom"].set_color(AXIS); ax.tick_params(colors=MUTED, length=0, labelsize=9)
+    ax.grid(axis="x", color=GRID, lw=0.8); ax.set_axisbelow(True)
+    n_rep = int(probe.groupby(["text", "model"]).size().max())
+    for qi, text in enumerate(texts):
+        top = -(qi * block)
+        ax.text(-0.215, top, text if len(text) <= 78 else text[:75] + "...", fontsize=10, color=INK, fontweight="bold", ha="left", va="center")
+        for mi, m in enumerate(models):
+            y = top - 1 - mi; g = probe[(probe.text == text) & (probe.model == m)]
+            ax.text(-0.012, y, MODEL_NAMES.get(m, m), fontsize=9, color=INK2, ha="right", va="center")
+            p = g.p_max.dropna().to_numpy(float)
+            if len(p):
+                same = p.max() - p.min() < 0.005
+                if same:                                        # every repeat identical: one larger dot
+                    ax.scatter([p.mean()], [y], s=64, color=COLORS[mi], edgecolor=SURF, linewidth=1.2, zorder=3)
+                else:
+                    seen, off = {}, []
+                    for v in p:                                 # equal values fan out slightly instead of overprinting
+                        k = round(v, 2); n = seen.get(k, 0); seen[k] = n + 1
+                        off.append(((n + 1) // 2) * 0.13 * (1 if n % 2 else -1))
+                    ax.plot([p.min(), p.max()], [y, y], color=COLORS[mi], lw=1.2, alpha=0.5, zorder=2)
+                    ax.scatter(p, y + np.array(off), s=30, color=COLORS[mi], edgecolor=SURF, linewidth=0.9, zorder=3)
+                spread = f"identical, {p.max():.2f}" if same else f"{p.min():.2f} to {p.max():.2f}"
+            else:
+                ax.text(0.5, y, "no probability returned", fontsize=8.5, color=MUTED, style="italic", ha="center", va="center")
+                spread = "n/a"
+            c = collections.Counter(g.label)
+            labels = "  ·  ".join(f"{k} ×{v}" for k, v in c.most_common())
+            flip = len(c) > 1
+            ax.text(1.03, y, spread, fontsize=9, color=INK2, ha="left", va="center")
+            ax.text(1.25, y, ("changed:  " if flip else "") + labels, fontsize=9, color=INK if flip else INK2,
+                    fontweight="bold" if flip else "normal", ha="left", va="center")
+    ax.text(1.03, 0.55, "probability", fontsize=9, color=MUTED, ha="left", va="center")
+    ax.text(1.25, 0.55, "labels returned", fontsize=9, color=MUTED, ha="left", va="center")
+    ax.set_xlim(-0.22, 1.78); ax.set_ylim(-(len(texts) * block) + 0.6, 0.95)
+    ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0]); ax.set_yticks([])
+    ax.spines["bottom"].set_bounds(0, 1)
+    ax.set_xlabel("top probability returned, one dot per repeat", color=INK2, fontsize=9.5, x=0.305)
+    ax.set_title(f"The same request sent {n_rep} times: how much do the answer and its probability move?", loc="left", fontsize=12, color=INK, pad=10)
+    fig.tight_layout()
+    return fig
+
+
+# ----------------------------------------------------------------------------- chart for section 5.3
+def threshold_sweep(res, ths=(0.5, 0.7, 0.8, 0.9, 0.95, 0.99)):
+    """Reject an answer when p_max is below the threshold, the model picked `other`, or it refused."""
+    rows = []
+    for t in ths:
+        reject = (res.p_max < t) | res.pred.eq("other") | res.pred.isna()
+        acc = res[~res.is_oos & ~reject].pipe(lambda d: d.pred.eq(d.label).mean())
+        rows.append({"threshold": t, "OOS rejected": reject[res.is_oos].mean(),
+                     "in-scope rejected": reject[~res.is_oos].mean(), "acc on accepted in-scope": acc})
+    return pd.DataFrame(rows)
+
+def plot_tradeoff(results, models, condition="with_other"):
+    """Left: out-of-scope caught against genuine queries rejected, one line per model, points labelled by threshold.
+    Right: accuracy on the accepted genuine queries, same horizontal axis."""
+    import matplotlib.pyplot as plt
+    SURF, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
+    COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]
+    models = [m for m in models if results[(condition, m)].p_max.notna().any()]   # chat has no probability to threshold
+    LABELLED = (0.5, 0.9, 0.99)
+    fig, (a, b) = plt.subplots(1, 2, figsize=(12.5, 4.4), facecolor=SURF, sharex=True)
+    for ax in (a, b):
+        ax.set_facecolor(SURF)
+        for s in ("top", "right"): ax.spines[s].set_visible(False)
+        for s in ("left", "bottom"): ax.spines[s].set_color(AXIS)
+        ax.tick_params(colors=MUTED, length=0, labelsize=9); ax.grid(color=GRID, lw=0.8); ax.set_axisbelow(True)
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1%}"))
+        ax.set_xlabel("genuine queries rejected (sent to a person or fallback)", color=INK2, fontsize=9.5)
+    for i, m in enumerate(models):
+        s = threshold_sweep(results[(condition, m)]); col = COLORS[i]
+        for ax, ycol in ((a, "OOS rejected"), (b, "acc on accepted in-scope")):
+            ax.plot(s["in-scope rejected"], s[ycol], color=col, lw=2, zorder=2)
+            ax.scatter(s["in-scope rejected"], s[ycol], s=46, color=col, edgecolor=SURF, linewidth=1.3, zorder=3)
+        # selected thresholds labelled on both panels: below the line for the first model, above for the second
+        for _, r in s[s.threshold.isin(LABELLED)].iterrows():
+          for ax, ycol in ((a, "OOS rejected"), (b, "acc on accepted in-scope")):
+            ax.annotate(f"{r.threshold:g}", (r["in-scope rejected"], r[ycol]), xytext=(0, -13 if i == 0 else 10),
+                       textcoords="offset points", fontsize=8, color=INK2, ha="center", va="center")
+        last = s.iloc[-1]
+        for ax, ycol in ((a, "OOS rejected"), (b, "acc on accepted in-scope")):
+            ax.annotate(MODEL_NAMES.get(m, m), (last["in-scope rejected"], last[ycol]), xytext=(8, 0), textcoords="offset points",
+                        fontsize=9.5, color=INK, fontweight="bold", ha="left", va="center")
+    a.set_xlim(0, 0.46)
+    a.set_ylabel("out-of-scope queries caught", color=INK2, fontsize=9.5)
+    b.set_ylabel("accuracy on the genuine queries accepted", color=INK2, fontsize=9.5)
+    a.set_title("Catching more unknowns costs genuine traffic", loc="left", fontsize=12, color=INK, pad=22)
+    a.text(0, 1.03, "labels = probability threshold (0.5, 0.9, 0.99 shown) · up and to the left is better", transform=a.transAxes, fontsize=8.5, color=INK2)
+    b.set_title("What the rejected traffic buys in accuracy", loc="left", fontsize=12, color=INK, pad=22)
+    b.text(0, 1.03, "same thresholds, same horizontal axis · up and to the left is better", transform=b.transAxes, fontsize=8.5, color=INK2)
+    fig.tight_layout(w_pad=3)
+    return fig
+
+
+# ----------------------------------------------------------------------------- chart for section 5.1
+def plot_confidence_bands(results, models, condition="no_other"):
+    """100% stacked bars: for each model, genuine and out-of-scope queries split by the top probability given,
+    with refusals as their own segment."""
+    import matplotlib.pyplot as plt
+    SURF, INK, MUTED, AXIS, GRID = "#fcfcfb", "#0b0b0b", "#898781", "#c3c2b7", "#e1e0d9"
+    SEQ = ["#cde2fb", "#9ec5f4", "#5598e7", "#256abf", "#0d366b"]        # light -> dark = less -> more confident
+    REF = "#c3c2b7"
+    bands = [(0, .5, "below 0.5"), (.5, .7, "0.5 to 0.7"), (.7, .9, "0.7 to 0.9"), (.9, .99, "0.9 to 0.99"), (.99, 1.01, "0.99 and above")]
+    rows = []
+    for m in models:
+        r = results[(condition, m)]
+        for grp, sub in (("genuine", r[~r.is_oos]), ("out-of-scope", r[r.is_oos])):
+            rows.append((f"{MODEL_NAMES.get(m, m)}, {grp}", [((sub.p_max >= lo) & (sub.p_max < hi)).mean() for lo, hi, _ in bands] + [sub.pred.isna().mean()]))
+    fig, ax = plt.subplots(figsize=(11.5, 0.62 * len(rows) + 1.7), facecolor=SURF)
+    ax.set_facecolor(SURF)
+    for s in ("top", "right", "left"): ax.spines[s].set_visible(False)
+    ax.spines["bottom"].set_color(AXIS); ax.tick_params(colors=MUTED, length=0, labelsize=9)
+    ax.grid(axis="x", color=GRID, lw=0.8); ax.set_axisbelow(True)
+    ys = np.arange(len(rows))[::-1]
+    for y, (lab, sh) in zip(ys, rows):
+        left = 0
+        for i, v in enumerate(sh):
+            ax.barh(y, v, left=left, color=REF if i == 5 else SEQ[i], edgecolor=SURF, linewidth=2, height=0.62)
+            if v >= 0.06:
+                ax.text(left + v / 2, y, f"{v:.0%}", ha="center", va="center", fontsize=8.5, color="white" if i in (3, 4) else INK)
+            left += v
+        ax.text(-0.012, y, lab, ha="right", va="center", fontsize=9.5, color=INK)
+    ax.set_yticks([]); ax.set_xlim(0, 1)
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in SEQ] + [plt.Rectangle((0, 0), 1, 1, color=REF)]
+    ax.legend(handles, [b[2] for b in bands] + ["refused"], ncol=6, frameon=False, loc="lower left", bbox_to_anchor=(0, 1.0),
+              fontsize=9, title="top probability the model gave its chosen intent", title_fontsize=9, alignment="left")
+    ax.set_title("How sure each model sounded, by query type, with no `other` option", loc="left", fontsize=12, color=INK, pad=50)
+    fig.tight_layout(); fig.subplots_adjust(left=1.95 / fig.get_figwidth())
+    return fig
+
+def plot_unknown_squares(results, model, condition="no_other", per_row=50):
+    """Unit chart: every out-of-scope query as one square, shaded by the top probability given to its (wrong) intent."""
+    import matplotlib.pyplot as plt
+    SURF, INK, INK2, REF = "#fcfcfb", "#0b0b0b", "#52514e", "#c3c2b7"
+    SEQ = ["#cde2fb", "#9ec5f4", "#5598e7", "#256abf", "#0d366b"]
+    labels = ["below 0.5", "0.5 to 0.7", "0.7 to 0.9", "0.9 to 0.99", "0.99 and above"]
+    r = results[(condition, model)]; o = r[r.is_oos]
+    refused = int(o.pred.isna().sum()); p = np.sort(o.p_max.dropna().to_numpy())
+    band = np.digitize(p, [0.5, 0.7, 0.9, 0.99]); counts = np.bincount(band, minlength=5)
+    cols = [SEQ[b] for b in band] + [REF] * refused
+    n_rows = int(np.ceil(len(cols) / per_row))
+    fig, ax = plt.subplots(figsize=(11.5, 0.3 * n_rows + 1.5), facecolor=SURF); ax.set_facecolor(SURF); ax.axis("off")
+    for i, c in enumerate(cols):
+        ax.scatter(i % per_row, -(i // per_row), s=58, color=c, edgecolor=SURF, linewidth=0.8, marker="s")
+    leg = [(SEQ[k], f"{labels[k]}: {counts[k]}") for k in range(5)] + ([(REF, f"refused: {refused}")] if refused else [])
+    for k, (c, t) in enumerate(leg):
+        y = -(n_rows - 1) * k / max(len(leg) - 1, 1)
+        ax.scatter(per_row + 2, y, s=58, color=c, marker="s"); ax.text(per_row + 3, y, t, va="center", fontsize=9.5, color=INK)
+    ax.set_xlim(-1, per_row + 14); ax.set_ylim(-n_rows + 0.3, 1.0)
+    name = MODEL_NAMES.get(model, model)
+    ax.set_title(f"{name}'s {len(o)} out-of-scope queries, each given one of the listed intents", loc="left", fontsize=12, color=INK, pad=24)
+    ax.text(0, 1.02, "each square is one query, shaded by the top probability given to its (wrong) intent; no `other` option",
+            transform=ax.transAxes, fontsize=9, color=INK2)
+    fig.tight_layout()
+    return fig
